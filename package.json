@@ -1,0 +1,35 @@
+{
+  "name": "quick2uv",
+  "version": "0.0.1",
+  "private": true,
+  "description": "quick transfer python-repo by uv",
+  "author": "json",
+  "license": "ISC",
+  "homepage": "https://github.com//",
+  "keywords": [
+    "probot",
+    "github",
+    "probot-app"
+  ],
+  "scripts": {
+    "start": "probot run ./app.js",
+    "dev": "probot run ./app.js",
+    "test": "jest",
+    "test:ai": "node model/test-generator.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.0",
+    "probot": "^13.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "nock": "^14.0.0-beta.5",
+    "smee-client": "^2.0.0"
+  },
+  "engines": {
+    "node": ">= 18"
+  },
+  "jest": {
+    "testEnvironment": "node"
+  }
+}

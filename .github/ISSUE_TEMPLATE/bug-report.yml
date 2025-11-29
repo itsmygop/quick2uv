@@ -1,0 +1,27 @@
+name: Bug Report 🐛
+description: 创建 Bug 报告以帮助我们改进 / Create a report to help us improve
+title: 🐛[Bug] quick describe your question
+assignees:
+  - jasoneri
+labels: bug
+body:
+  - type: textarea
+    attributes:
+      label: 🐛 描述(Description)
+      description: >-
+        详细地描述 bug，让大家都能理解/Describe the bug in detail so that everyone can
+        understand it
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 📷 复现步骤(Steps to Reproduce)
+      description: >-
+        清晰描述复现步骤，让别人也能看到问题/Clearly describe the reproduction steps so that
+        others can see the problem
+      value: |-
+        1.
+        2.
+        3.
+    validations:
+      required: true
