@@ -1,6 +1,182 @@
 const fs = require("fs");
 const path = require("path");
 
+// Token 预算配置（大约 1 token ≈ 4 字符）
+const TOKEN_BUDGET = {
+  total: 6000,        // 总预算（字符数）
+  readme: 2500,       // README 预算
+  configFiles: 2000,  // 配置文件总预算
+  pythonFiles: 1500,  // Python 文件总预算
+};
+
+/**
+ * 智能截取 README，优先保留关键章节
+ * @param {string} content - README 原始内容
+ * @param {number} maxLen - 最大字符数
+ * @returns {string}
+ */
+function smartTruncateReadme(content, maxLen) {
+  if (!content || content.length <= maxLen) return content;
+
+  // 关键章节的正则匹配（按优先级排序）
+  const prioritySections = [
+    /#{1,3}\s*(usage|使用|用法|cli|command|命令)[^\n]*\n[\s\S]*?(?=\n#{1,3}\s|\n*$)/gi,
+    /#{1,3}\s*(install|安装|quick\s*start|快速开始)[^\n]*\n[\s\S]*?(?=\n#{1,3}\s|\n*$)/gi,
+    /#{1,3}\s*(example|示例|demo)[^\n]*\n[\s\S]*?(?=\n#{1,3}\s|\n*$)/gi,
+    /```[\s\S]*?```/g,  // 代码块通常包含使用示例
+  ];
+
+  let extracted = [];
+  let remainingBudget = maxLen;
+
+  // 先提取标题和简介（前 500 字符）
+  const intro = content.slice(0, 500);
+  extracted.push(intro);
+  remainingBudget -= intro.length;
+
+  // 按优先级提取关键章节
+  for (const regex of prioritySections) {
+    if (remainingBudget <= 0) break;
+
+    const matches = content.match(regex) || [];
+    for (const match of matches) {
+      if (remainingBudget <= 0) break;
+      // 避免重复（已在 intro 中）
+      if (intro.includes(match)) continue;
+
+      const truncated = match.slice(0, remainingBudget);
+      if (truncated.length > 100) {  // 只保留有意义的片段
+        extracted.push(truncated);
+        remainingBudget -= truncated.length;
+      }
+    }
+  }
+
+  return extracted.join("\n\n...\n\n");
+}
+
+/**
+ * 智能截取 Python 文件，优先保留入口点相关代码
+ * @param {string} content - Python 文件内容
+ * @param {number} maxLen - 最大字符数
+ * @returns {string}
+ */
+function smartTruncatePython(content, maxLen) {
+  if (!content || content.length <= maxLen) return content;
+
+  const lines = content.split("\n");
+  let result = [];
+  let currentLen = 0;
+
+  // 1. 先保留 import 语句（通常在开头）
+  const importLines = [];
+  let importEnd = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^(import |from .+ import )/.test(line)) {
+      importLines.push(line);
+      importEnd = i;
+    } else if (importLines.length > 0 && line.trim() === "") {
+      continue;  // 跳过 import 之间的空行
+    } else if (importLines.length > 0) {
+      break;  // import 区域结束
+    }
+  }
+
+  // 2. 查找入口点相关代码（通常在文件末尾）
+  const entryPatterns = [
+    /if\s+__name__\s*==\s*["']__main__["']/,
+    /def\s+(main|run|cli|app|start)\s*\(/,
+    /\.add_command\(/,
+    /@click\.(command|group)/,
+    /argparse\.ArgumentParser/,
+  ];
+
+  // 从末尾向前查找入口点
+  let entryStart = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    for (const pattern of entryPatterns) {
+      if (pattern.test(lines[i])) {
+        entryStart = i;
+        break;
+      }
+    }
+    if (entryStart !== -1) break;
+  }
+
+  // 3. 组装结果
+  const halfBudget = Math.floor(maxLen / 2);
+
+  // 添加 import 部分
+  const importSection = importLines.join("\n");
+  if (importSection.length < halfBudget) {
+    result.push(importSection);
+    currentLen += importSection.length;
+  }
+
+  // 添加入口点部分（从入口点往前多取一些上下文）
+  if (entryStart !== -1) {
+    const contextStart = Math.max(entryStart - 20, importEnd + 1);  // 入口点前 20 行作为上下文
+    const entrySection = lines.slice(contextStart).join("\n");
+
+    if (currentLen + entrySection.length <= maxLen) {
+      if (contextStart > importEnd + 1) {
+        result.push("\n# ... (中间代码省略) ...\n");
+      }
+      result.push(entrySection);
+    } else {
+      // 预算不够，截取末尾部分
+      const remaining = maxLen - currentLen - 50;
+      if (remaining > 0) {
+        result.push("\n# ... (中间代码省略) ...\n");
+        result.push(entrySection.slice(-remaining));
+      }
+    }
+  } else {
+    // 没找到入口点，保留头尾
+    const remaining = maxLen - currentLen;
+    const middleContent = lines.slice(importEnd + 1).join("\n");
+    if (middleContent.length <= remaining) {
+      result.push(middleContent);
+    } else {
+      result.push(middleContent.slice(0, remaining / 2));
+      result.push("\n# ... (中间代码省略) ...\n");
+      result.push(middleContent.slice(-remaining / 2));
+    }
+  }
+
+  return result.join("\n");
+}
+
+/**
+ * 按预算分配截取多个文件
+ * @param {Object} fileContents - 文件名 -> 内容的映射
+ * @param {number} totalBudget - 总字符预算
+ * @param {Function} truncateFn - 截取函数
+ * @returns {Object}
+ */
+function truncateFilesByBudget(fileContents, totalBudget, truncateFn) {
+  const files = Object.entries(fileContents);
+  if (files.length === 0) return {};
+
+  // 按文件大小排序，优先处理小文件（完整保留）
+  files.sort((a, b) => a[1].length - b[1].length);
+
+  const result = {};
+  let remaining = totalBudget;
+  const perFileBudget = Math.floor(totalBudget / files.length);
+
+  for (const [fileName, content] of files) {
+    if (remaining <= 0) break;
+
+    const budget = Math.min(remaining, Math.max(perFileBudget, 500));
+    result[fileName] = truncateFn ? truncateFn(content, budget) : content.slice(0, budget);
+    remaining -= result[fileName].length;
+  }
+
+  return result;
+}
+
 // Load template
 const pyprojectTemplate = fs.readFileSync(
   path.join(process.cwd(), "assets/pyproject.toml"),
@@ -332,7 +508,7 @@ function buildAIPrompt(
   // README 优先展示（通常包含使用说明和入口点信息）
   if (readmeContent) {
     prompt += `\n## README 文档（重要！优先从这里提取使用方式和入口点）\n`;
-    prompt += `\`\`\`\n${readmeContent.slice(0, 4000)}\n\`\`\`\n`;
+    prompt += `\`\`\`\n${smartTruncateReadme(readmeContent, TOKEN_BUDGET.readme)}\n\`\`\`\n`;
   }
 
   // 显示根目录所有文件（帮助 AI 判断 include）
@@ -341,10 +517,12 @@ function buildAIPrompt(
     prompt += `\`\`\`\n${allRootFiles.join("\n")}\n\`\`\`\n`;
   }
 
+  // 智能截取配置文件
   if (Object.keys(fileContents).length > 0) {
+    const truncatedConfigs = truncateFilesByBudget(fileContents, TOKEN_BUDGET.configFiles);
     prompt += `\n## 现有配置文件\n`;
-    for (const [fileName, content] of Object.entries(fileContents)) {
-      prompt += `\n### ${fileName}\n\`\`\`\n${content.slice(0, 3000)}\n\`\`\`\n`;
+    for (const [fileName, content] of Object.entries(truncatedConfigs)) {
+      prompt += `\n### ${fileName}\n\`\`\`\n${content}\n\`\`\`\n`;
     }
   }
 
@@ -352,11 +530,16 @@ function buildAIPrompt(
     prompt += `\n## 根目录 Python 文件\n${pythonFiles.join(", ")}\n`;
   }
 
-  // 包含 Python 文件内容用于推断入口点
+  // 智能截取 Python 文件内容（优先保留入口点相关代码）
   if (Object.keys(pythonFileContents).length > 0) {
+    const truncatedPython = truncateFilesByBudget(
+      pythonFileContents,
+      TOKEN_BUDGET.pythonFiles,
+      smartTruncatePython
+    );
     prompt += `\n## Python 文件源码（备用：当 README 无法确定入口时参考）\n`;
-    for (const [fileName, content] of Object.entries(pythonFileContents)) {
-      prompt += `\n### ${fileName}\n\`\`\`python\n${content.slice(0, 2000)}\n\`\`\`\n`;
+    for (const [fileName, content] of Object.entries(truncatedPython)) {
+      prompt += `\n### ${fileName}\n\`\`\`python\n${content}\n\`\`\`\n`;
     }
   }
 
